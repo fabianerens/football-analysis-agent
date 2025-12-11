@@ -267,6 +267,9 @@ Agents communicate through shared state:
 - If you encounter dependency errors, try removing the lock file and reinstalling:
   ```bash
   rm uv.lock
+  ```
+
+  ```bash
   uv sync
   ```
 
