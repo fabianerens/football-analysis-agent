@@ -24,7 +24,6 @@ from bi_agent.agent import (
     GEMINI_MODEL
 )
 
-from bi_agent.bi_service import BIService
 from bi_agent.tools import DatabaseTools, execute_sql_and_format, get_database_schema
 
 # Football analysis components
@@ -56,7 +55,6 @@ __all__ = [
     # Constants
     'GEMINI_MODEL',
     # Services and Tools
-    'BIService',
     'DatabaseTools',
     'execute_sql_and_format',
     'get_database_schema',
