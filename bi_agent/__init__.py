@@ -1,8 +1,9 @@
 """
-Business Intelligence Agent Package
+Agent Package for Google ADK.
 
-This package contains the agent definitions, tools, and database utilities
-for the BI agent pipeline using Google ADK.
+Contains:
+- Football Match Analysis (main app) - uses football-data.org API
+- Business Intelligence agents (legacy, for adk web compatibility)
 """
 
 from bi_agent.agent import (
@@ -26,6 +27,18 @@ from bi_agent.agent import (
 from bi_agent.bi_service import BIService
 from bi_agent.tools import DatabaseTools, execute_sql_and_format, get_database_schema
 
+# Football analysis components
+from bi_agent.football_tools import (
+    get_recent_matches,
+    calculate_metrics,
+    get_team_analysis,
+    get_competitions,
+    get_team_names_for_dropdown,
+    get_teams_for_competition,
+    SUPPORTED_COMPETITIONS
+)
+from bi_agent.football_agent import football_analysis_agent, football_runner
+
 __all__ = [
     # Root agent (required for ADK web)
     'root_agent',
@@ -47,4 +60,14 @@ __all__ = [
     'DatabaseTools',
     'execute_sql_and_format',
     'get_database_schema',
+    # Football Analysis
+    'get_recent_matches',
+    'calculate_metrics',
+    'get_team_analysis',
+    'get_competitions',
+    'get_team_names_for_dropdown',
+    'get_teams_for_competition',
+    'SUPPORTED_COMPETITIONS',
+    'football_analysis_agent',
+    'football_runner',
 ]

@@ -11,3 +11,6 @@ wheels/
 
 # Environment files
 .env
+
+# Claude Code settings
+.claude/

@@ -1,277 +1,266 @@
 """
-Gradio UI for the Business Intelligence Agent Pipeline.
+Gradio UI for Football Match Analysis using Google ADK.
 
-This app demonstrates Google ADK's SequentialAgent pattern:
-1. Text-to-SQL Agent (standalone)
-2. SQL execution via BIService
-3. Insight Pipeline (SequentialAgent: Visualization → Explanation)
+This app analyzes football matches using data from football-data.org API.
+The LLM agent generates insights and tactical recommendations based on
+pre-calculated statistics.
 """
 
 import gradio as gr
 import asyncio
-import os
-import pandas as pd
-import altair as alt
+import json
 from dotenv import load_dotenv
 from google.genai import types
 
-# Import root agent runner
-from bi_agent import root_runner
+# Import football tools and agent
+from bi_agent.football_tools import (
+    get_team_analysis,
+    get_competitions,
+    get_team_names_for_dropdown,
+)
+from bi_agent.football_agent import football_runner
 
-# Load environment variables from bi_agent/.env
-load_dotenv(dotenv_path='bi_agent/.env')
+# Load environment variables
+load_dotenv()
 
 
-async def run_bi_pipeline_async(user_question: str):
+async def run_football_analysis_async(team_a_data: dict, team_b_data: dict):
     """
-    Run the complete BI pipeline using root_runner.
-
-    This function executes the entire BI pipeline:
-    1. Text-to-SQL: Generate SQL from question
-    2. SQL Execution: Execute query against database
-    3. Data Formatting: Prepare results
-    4. Visualization: Generate Altair chart
-    5. Explanation: Provide plain-language insights
+    Run the football analysis agent with pre-calculated team data.
 
     Args:
-        user_question: Natural language question from the user
+        team_a_data: Analysis data for Team A (from get_team_analysis)
+        team_b_data: Analysis data for Team B (from get_team_analysis)
 
     Returns:
-        Dictionary with keys: sql_query, query_results, chart_spec, explanation_text
+        Analysis result from the LLM agent
     """
-    # Create session
-    session = await root_runner.session_service.create_session(
+    # Create session for football analysis
+    session = await football_runner.session_service.create_session(
         user_id='user',
-        app_name='bi_agent'
+        app_name='football_analysis'
     )
 
-    # Create user message
+    # Prepare structured input for the LLM
+    input_data = {
+        "team_a": {
+            "team_name": team_a_data["team_name"],
+            "metrics": team_a_data["metrics"]
+        },
+        "team_b": {
+            "team_name": team_b_data["team_name"],
+            "metrics": team_b_data["metrics"]
+        }
+    }
+
+    # Create user message with the structured data
     content = types.Content(
         role='user',
-        parts=[types.Part(text=user_question)]
+        parts=[types.Part(text=f"Analyze this match data:\n{json.dumps(input_data, indent=2)}")]
     )
 
-    # Run the complete pipeline
-    events_async = root_runner.run_async(
+    # Run the analysis agent
+    events_async = football_runner.run_async(
         user_id='user',
         session_id=session.id,
         new_message=content
     )
 
-    # Extract results from state
-    results = {}
+    # Extract results
+    result = ""
     async for event in events_async:
         if event.actions and event.actions.state_delta:
-            for key, value in event.actions.state_delta.items():
-                results[key] = value
+            if "analysis_result" in event.actions.state_delta:
+                result = event.actions.state_delta["analysis_result"]
 
-    return results
+    return result
 
 
-async def process_request_async(message: str):
+def update_team_dropdown(competition: str):
     """
-    Process user request through the BI pipeline using root_runner.
-
-    The root_agent handles the complete pipeline:
-    1. Text-to-SQL Agent → Generates SQL from question
-    2. SQL Executor Agent → Executes SQL against database
-    3. Data Formatter Agent → Formats results
-    4. Insight Pipeline → Visualization + Explanation
+    Update team dropdown when competition is selected.
 
     Args:
-        message: User's natural language question
+        competition: Selected competition display name
 
     Returns:
-        Tuple of (sql_query, df, chart, explanation_text)
+        Updated Gradio Dropdown with team choices
+    """
+    if not competition:
+        return gr.Dropdown(choices=[], value=None)
+
+    teams = get_team_names_for_dropdown(competition)
+
+    # Check for errors
+    if teams and teams[0].startswith("Error:"):
+        return gr.Dropdown(choices=[], value=None, label=teams[0])
+
+    return gr.Dropdown(choices=teams, value=None)
+
+
+def analyze_football_match(
+    league_a: str, team_a: str,
+    league_b: str, team_b: str,
+    num_matches: int
+):
+    """
+    Analyze a football match between two teams.
+
+    Args:
+        league_a: Competition for Team A
+        team_a: Name of Team A
+        league_b: Competition for Team B
+        team_b: Name of Team B
+        num_matches: Number of recent matches to analyze
+
+    Returns:
+        Markdown-formatted analysis report
     """
     try:
-        # Validate input
-        if not message.strip():
-            return "Error: Please enter a question", None, None, "Error: No question provided"
+        # Validate inputs
+        if not league_a or not team_a:
+            return "**Error:** Please select a league and team for Team A."
+        if not league_b or not team_b:
+            return "**Error:** Please select a league and team for Team B."
 
-        # Run the complete BI pipeline
-        results = await run_bi_pipeline_async(message)
+        # Fetch and analyze Team A
+        team_a_data = get_team_analysis(team_a, league_a, num_matches)
+        if not team_a_data["success"]:
+            return f"**Error for Team A ({team_a}):** {team_a_data['error']}"
 
-        # Extract SQL query
-        sql_query = results.get('sql_query', '')
+        # Fetch and analyze Team B
+        team_b_data = get_team_analysis(team_b, league_b, num_matches)
+        if not team_b_data["success"]:
+            return f"**Error for Team B ({team_b}):** {team_b_data['error']}"
 
-        # Clean up SQL query (remove markdown if present)
-        sql_query = sql_query.strip()
-        if sql_query.startswith("```sql"):
-            sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
-        elif sql_query.startswith("```"):
-            sql_query = sql_query.replace("```", "").strip()
+        # Build the report header with metrics
+        report = f"""## Football Match Analysis
 
-        # Extract query results
-        query_results_str = results.get('query_results', '{}')
-        try:
-            import json
-            query_results = json.loads(query_results_str) if isinstance(query_results_str, str) else query_results_str
-        except:
-            query_results = {'success': False, 'data': [], 'error': 'Failed to parse query results'}
+### {team_a_data['team_name']} vs {team_b_data['team_name']}
 
-        # Check if query execution was successful
-        if not query_results.get('success', False):
-            error_msg = query_results.get('error', 'Unknown error')
-            sql_query = f"-- Error executing query\n{sql_query}\n\n-- Error: {error_msg}"
-            return sql_query, None, None, f"Error executing query: {error_msg}"
+---
 
-        # Convert query results to DataFrame
-        data_list = query_results.get('data', [])
-        if not data_list:
-            df = pd.DataFrame()
-            return sql_query, df, None, "The query executed successfully but returned no data."
+### Team Statistics (Last {num_matches} Matches)
 
-        df = pd.DataFrame(data_list)
+| Metric | {team_a_data['team_name']} | {team_b_data['team_name']} |
+|--------|------------|------------|
+| Matches Played | {team_a_data['metrics']['matches_played']} | {team_b_data['metrics']['matches_played']} |
+| Wins / Draws / Losses | {team_a_data['metrics']['wins']}/{team_a_data['metrics']['draws']}/{team_a_data['metrics']['losses']} | {team_b_data['metrics']['wins']}/{team_b_data['metrics']['draws']}/{team_b_data['metrics']['losses']} |
+| Total Points | {team_a_data['metrics']['total_points']} | {team_b_data['metrics']['total_points']} |
+| Goals Scored | {team_a_data['metrics']['goals_scored']} | {team_b_data['metrics']['goals_scored']} |
+| Goals Conceded | {team_a_data['metrics']['goals_conceded']} | {team_b_data['metrics']['goals_conceded']} |
+| Avg Goals Scored | {team_a_data['metrics']['avg_goals_scored']} | {team_b_data['metrics']['avg_goals_scored']} |
+| Avg Goals Conceded | {team_a_data['metrics']['avg_goals_conceded']} | {team_b_data['metrics']['avg_goals_conceded']} |
 
-        # Extract chart specification and explanation
-        chart_spec = results.get('chart_spec', '')
-        explanation_text = results.get('explanation_text', '')
+---
 
-        # Execute chart specification
-        chart = None
-        if chart_spec:
-            try:
-                chart_spec_clean = chart_spec.strip()
-                if chart_spec_clean.startswith("```python"):
-                    chart_spec_clean = chart_spec_clean.replace("```python", "").replace("```", "").strip()
-                elif chart_spec_clean.startswith("```"):
-                    chart_spec_clean = chart_spec_clean.replace("```", "").strip()
+### AI Analysis
 
-                # Create namespace and execute chart code
-                namespace = {
-                    'alt': alt,
-                    'pd': pd,
-                    'df': df,
-                    'data': df.to_dict(orient='records')
-                }
+"""
 
-                exec(chart_spec_clean, namespace)
+        # Run the LLM analysis with pre-calculated metrics
+        analysis_result = asyncio.run(run_football_analysis_async(team_a_data, team_b_data))
 
-                if 'chart' in namespace:
-                    chart = namespace['chart']
-            except Exception as e:
-                print(f"Chart generation error: {str(e)}")
-                import traceback
-                traceback.print_exc()
+        report += analysis_result
 
-        # Return all four outputs
-        return sql_query, df, chart, explanation_text
+        return report
 
     except Exception as e:
-        error_msg = f"Error: {str(e)}"
-        print(f"Full error: {e}")
-        import traceback
-        traceback.print_exc()
-        return error_msg, None, None, error_msg
-
-
-def process_request(message: str):
-    """
-    Synchronous wrapper for Gradio.
-
-    Database credentials are read from environment variables in bi_agent/.env
-    """
-    try:
-        sql_query, df, chart, explanation = asyncio.run(
-            process_request_async(message)
-        )
-        return sql_query, df, chart, explanation
-    except Exception as e:
-        error_msg = f"Error: {str(e)}"
-        return error_msg, None, None, error_msg
+        return f"**Error:** {str(e)}"
 
 
 # ============================================================================
 # Gradio UI
 # ============================================================================
 
-with gr.Blocks(title="Business Intelligence Agent") as demo:
+# Get list of competitions for dropdowns
+COMPETITIONS = get_competitions()
+
+with gr.Blocks(title="Football Match Analysis") as demo:
     gr.Markdown("""
-    # Business Intelligence Agent (Google ADK)
+    # Football Match Analysis (Google ADK)
 
-    This demo uses **Google ADK's root_agent SequentialAgent**:
+    Analyze recent performance of two football teams using data from **football-data.org**.
 
-    1. **Text-to-SQL Agent** → Generates SQL from natural language
-    2. **SQL Executor Agent** → Executes SQL against database
-    3. **Data Formatter Agent** → Prepares results for visualization
-    4. **Insight Pipeline** (**SequentialAgent**) → Visualization Agent → Explanation Agent
+    **How to use:**
+    1. Select a league for each team
+    2. Select the team from the dropdown
+    3. Choose how many recent matches to analyze
+    4. Click "Analyze Match"
 
-    Database credentials are configured in `bi_agent/.env`
-
-    Enter your question below and click "Analyze Data".
+    **Note:** Requires `FOOTBALL_API_KEY` in your `.env` file.
+    Get a free API key at [football-data.org](https://www.football-data.org/)
     """)
 
+    # Team A Selection
+    gr.Markdown("### Team A")
     with gr.Row():
-        user_input = gr.Textbox(
-            label="Your Question",
-            placeholder="e.g., 'What are the top 10 products by price?'",
-            lines=3
+        league_a_dropdown = gr.Dropdown(
+            choices=COMPETITIONS,
+            label="League",
+            value=None,
+            scale=1
+        )
+        team_a_dropdown = gr.Dropdown(
+            choices=[],
+            label="Team",
+            value=None,
+            scale=2
+        )
+
+    # Team B Selection
+    gr.Markdown("### Team B")
+    with gr.Row():
+        league_b_dropdown = gr.Dropdown(
+            choices=COMPETITIONS,
+            label="League",
+            value=None,
+            scale=1
+        )
+        team_b_dropdown = gr.Dropdown(
+            choices=[],
+            label="Team",
+            value=None,
+            scale=2
+        )
+
+    # Settings
+    with gr.Row():
+        num_matches_slider = gr.Slider(
+            minimum=3,
+            maximum=10,
+            value=5,
+            step=1,
+            label="Number of Recent Matches to Analyze"
         )
 
     with gr.Row():
-        submit_btn = gr.Button("Analyze Data", variant="primary")
-        clear_btn = gr.Button("Clear")
+        submit_btn = gr.Button("Analyze Match", variant="primary", size="lg")
 
-    gr.Markdown("## Results")
+    gr.Markdown("## Analysis Report")
 
-    # Four output panels
-    with gr.Row():
-        with gr.Column(scale=1):
-            gr.Markdown("### Generated SQL")
-            sql_output = gr.Code(
-                label="SQL Query",
-                language="sql",
-                value="-- Waiting for input..."
-            )
-
-        with gr.Column(scale=1):
-            gr.Markdown("### Query Results")
-            data_output = gr.DataFrame(
-                label="Data Table",
-                wrap=True
-            )
-
-    with gr.Row():
-        with gr.Column(scale=1):
-            gr.Markdown("### Visualization")
-            chart_output = gr.Plot(label="Chart")
-
-        with gr.Column(scale=1):
-            gr.Markdown("### Insights")
-            explanation_output = gr.Markdown(
-                value="*Waiting for input...*"
-            )
-
-    # Examples
-    gr.Examples(
-        examples=[
-            ["What are the top 10 products by transfer price?"],
-            ["Show me the product categories and their average prices"],
-            ["List all products in the Bikes category"],
-            ["How many products are there in each category?"],
-            ["What is the most expensive product?"],
-        ],
-        inputs=user_input
+    output = gr.Markdown(
+        value="*Select leagues and teams, then click 'Analyze Match'*"
     )
 
-    # Button actions
+    # Event handlers: Update team dropdowns when league is selected
+    league_a_dropdown.change(
+        fn=update_team_dropdown,
+        inputs=[league_a_dropdown],
+        outputs=[team_a_dropdown]
+    )
+
+    league_b_dropdown.change(
+        fn=update_team_dropdown,
+        inputs=[league_b_dropdown],
+        outputs=[team_b_dropdown]
+    )
+
+    # Analyze button
     submit_btn.click(
-        fn=process_request,
-        inputs=[user_input],
-        outputs=[sql_output, data_output, chart_output, explanation_output]
-    )
-
-    clear_btn.click(
-        fn=lambda: (
-            "",
-            "-- Waiting for input...",
-            None,
-            None,
-            "*Waiting for input...*"
-        ),
-        inputs=None,
-        outputs=[user_input, sql_output, data_output, chart_output, explanation_output]
+        fn=analyze_football_match,
+        inputs=[league_a_dropdown, team_a_dropdown, league_b_dropdown, team_b_dropdown, num_matches_slider],
+        outputs=[output]
     )
 
 
